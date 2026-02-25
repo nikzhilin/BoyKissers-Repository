@@ -8,6 +8,8 @@ endif(NOT CMAKE_BUILD_TYPE)
 
 set(CMAKE_CXX_STANDARD 17)
 
+find_package(OpenMP)
+
 set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -O0 -Werror=return-type")
 set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -O0")
 
@@ -25,6 +27,11 @@ target_include_directories(dataset_utils_lib
 add_executable(${CMAKE_PROJECT_NAME} src/main.cpp)
 target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE dataset_utils_lib)
 
+if (OpenMP_CXX_FOUND)
+    target_link_libraries(${CMAKE_PROJECT_NAME} PRIVATE OpenMP::OpenMP_CXX)
+    target_link_libraries(dataset_utils_lib PUBLIC OpenMP::OpenMP_CXX)
+endif()
+
 option(BUILD_TESTS "Build unit tests" OFF)
 
 if (BUILD_TESTS)
@@ -41,6 +48,10 @@ if (BUILD_TESTS)
     add_executable(unit_tests tests/test_dataset_utils.cpp)
 
     target_link_libraries(unit_tests PRIVATE dataset_utils_lib Catch2::Catch2WithMain)
+
+    if (OpenMP_CXX_FOUND)
+        target_link_libraries(unit_tests PRIVATE OpenMP::OpenMP_CXX)
+    endif()
     add_test(NAME DatasetUtilsTests COMMAND unit_tests)
 
     add_custom_target(run-tests

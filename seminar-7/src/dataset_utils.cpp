@@ -5,6 +5,7 @@
 #include <iomanip>
 #include <iostream>
 #include <numeric>
+#include <omp.h>
 #include <random>
 #include <stdexcept>
 
@@ -15,23 +16,30 @@ Dataset generateRandomData(int n)
     if(n < 0)
         throw std::invalid_argument("Size of dataset must be non-negative.");
 
-    Dataset data;
-    data.reserve(static_cast<std::size_t>(n));
+    Dataset data(static_cast<std::size_t>(n));
 
-    std::mt19937 rng(std::random_device{}());
-    std::uniform_int_distribution<int> idDist(1, std::max(1, n));
     std::vector<std::string> categories = {"A", "B", "C", "D", "E"};
-    std::uniform_int_distribution<std::size_t> categoryDist(
-        0, categories.size() - 1);
-    std::uniform_real_distribution<double> valueDist(0.0, 100.0);
 
-    for(int i = 0; i < n; ++i)
+#pragma omp parallel
     {
-        int id = idDist(rng);
-        const std::string& category = categories[categoryDist(rng)];
-        double value1 = valueDist(rng);
-        double value2 = valueDist(rng);
-        data.emplace_back(id, category, value1, value2);
+        std::mt19937 rng(
+            std::random_device{}() ^
+            static_cast<std::mt19937::result_type>(omp_get_thread_num()));
+        std::uniform_int_distribution<int> idDist(1, std::max(1, n));
+        std::uniform_int_distribution<std::size_t> categoryDist(
+            0, categories.size() - 1);
+        std::uniform_real_distribution<double> valueDist(0.0, 100.0);
+
+#pragma omp for
+        for(int i = 0; i < n; ++i)
+        {
+            int id = idDist(rng);
+            const std::string& category = categories[categoryDist(rng)];
+            double value1 = valueDist(rng);
+            double value2 = valueDist(rng);
+            data[static_cast<std::size_t>(i)] =
+                std::make_tuple(id, category, value1, value2);
+        }
     }
 
     return data;
@@ -42,11 +50,9 @@ Dataset filterByCategory(const Dataset& data, const std::string& category)
     Dataset result;
     result.reserve(data.size());
 
-    for(const auto& record : data)
-    {
+    for(const auto& record: data)
         if(std::get<1>(record) == category)
             result.push_back(record);
-    }
 
     return result;
 }
@@ -59,7 +65,7 @@ Dataset filterByRange(const Dataset& data, double minVal, double maxVal)
     Dataset result;
     result.reserve(data.size());
 
-    for(const auto& record : data)
+    for(const auto& record: data)
     {
         double value1 = std::get<2>(record);
         if(value1 >= minVal && value1 <= maxVal)
@@ -98,9 +104,10 @@ double calculateStdDev(const std::vector<double>& values, double mean)
             "Cannot compute standard deviation of empty vector.");
 
     double sumSquares = 0.0;
-    for(double v : values)
+#pragma omp parallel for reduction(+ : sumSquares)
+    for(std::size_t i = 0; i < values.size(); ++i)
     {
-        double diff = v - mean;
+        double diff = values[i] - mean;
         sumSquares += diff * diff;
     }
 
@@ -108,15 +115,14 @@ double calculateStdDev(const std::vector<double>& values, double mean)
     return std::sqrt(variance);
 }
 
-std::tuple<double, double, double> calculateStats(
-    const std::vector<double>& values)
+std::tuple<double, double, double>
+calculateStats(const std::vector<double>& values)
 {
     if(values.empty())
         throw std::invalid_argument("Cannot compute stats of empty vector.");
 
     double mean = calculateMean(values);
-    auto [minIt, maxIt] =
-        std::minmax_element(values.begin(), values.end());
+    auto [minIt, maxIt] = std::minmax_element(values.begin(), values.end());
 
     return std::make_tuple(mean, *minIt, *maxIt);
 }
@@ -130,23 +136,21 @@ std::vector<double> extractColumn(const Dataset& data, int columnIndex)
     std::vector<double> result;
     result.reserve(data.size());
 
-    for(const auto& record : data)
-    {
+    for(const auto& record: data)
         if(columnIndex == 2)
             result.push_back(std::get<2>(record));
         else
             result.push_back(std::get<3>(record));
-    }
 
     return result;
 }
 
-std::map<std::string, std::tuple<double, double, double>> groupByCategory(
-    const Dataset& data)
+std::map<std::string, std::tuple<double, double, double>>
+groupByCategory(const Dataset& data)
 {
     std::unordered_map<std::string, std::vector<double>> groupedValues;
 
-    for(const auto& record : data)
+    for(const auto& record: data)
     {
         const std::string& category = std::get<1>(record);
         double value1 = std::get<2>(record);
@@ -154,9 +158,22 @@ std::map<std::string, std::tuple<double, double, double>> groupByCategory(
     }
 
     std::map<std::string, std::tuple<double, double, double>> statsByCategory;
-    for(auto& [category, values] : groupedValues)
+    std::vector<std::pair<const std::string, std::vector<double>*>> entries;
+    entries.reserve(groupedValues.size());
+    for(auto& [category, values]: groupedValues)
+        entries.emplace_back(category, &values);
+
+#pragma omp parallel for
+    for(std::size_t i = 0; i < entries.size(); ++i)
     {
-        statsByCategory[category] = calculateStats(values);
+        const std::string& category = entries[i].first;
+        std::vector<double>& values = *entries[i].second;
+        auto stats = calculateStats(values);
+
+#pragma omp critical
+        {
+            statsByCategory[category] = stats;
+        }
     }
 
     return statsByCategory;
@@ -174,7 +191,7 @@ void printReport(
     std::cout << std::fixed << std::setprecision(2);
     std::cout << "Category\tMean\tMin\tMax\n";
 
-    for(const auto& [category, triple] : stats)
+    for(const auto& [category, triple]: stats)
     {
         double mean{};
         double min{};
@@ -186,4 +203,3 @@ void printReport(
 }
 
 }  // namespace dataset
-
